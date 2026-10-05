@@ -5,7 +5,7 @@
 #ifdef _WIN32
 #include <Windows.h>
 #include "GL/glut.h"
-#define M_PI 3.141592654
+#define M_M_PI 3.141592654
 #elif __APPLE__
 #include <OpenGL/gl.h>
 #include <GLUT/GLUT.h>
@@ -55,8 +55,8 @@ void setupLighting()
 }
 
 void spherePoint(int i, int j, int n) {
-	double theta = i * M_PI / n;
-	double phi = j * M_PI / n;
+	double theta = i * M_M_PI / n;
+	double phi = j * M_M_PI / n;
 
 	double x = sin(theta) * sin(phi);
 	double y = cos(theta) * sin(phi);
@@ -70,11 +70,6 @@ void drawSphere(double r)
 {
 	glScalef(r, r, r);
 	glEnable(GL_NORMALIZE);		// ensure normals are unit length
-	GLfloat specularOn[]  = {1.0f, 1.0f, 1.0f, 1.0f};
-	GLfloat specularOff[] = {0.0f, 0.0f, 0.0f, 1.0f};
-	glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR,
-				m_Highlight ? specularOn : specularOff);
-	glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 50.0f);
 	
 	int i, j;
 	int n = 20;
@@ -91,10 +86,61 @@ void drawSphere(double r)
 
 }
 
+// u goes around the ring; v goes across the strip's width.
+void mobiusPoint(double u, double v, double radius)
+{
+	double c = cos(u), s = sin(u);
+	double ch = cos(u / 2.0), sh = sin(u / 2.0);
+	double r = radius + v * ch;
+
+	// tangents dP/du and dP/dv; their cross product is the normal.
+	double ux = -r * s - 0.5 * v * sh * c;
+	double uy =  r * c - 0.5 * v * sh * s;
+	double uz =  0.5 * v * ch;
+	double vx = ch * c, vy = ch * s, vz = sh;
+	glNormal3d(uy * vz - uz * vy,
+		uz * vx - ux * vz, ux * vy - uy * vx);
+	glVertex3d(r * c, r * s, v * sh);
+}
+
+void drawMobius(double radius, double halfWidth)
+{
+	int around = 100;
+	int across = 16;
+
+	// triangles used so that every rendered face is planar
+	glBegin(GL_TRIANGLES);
+	for (int i = 0; i < around; ++i) {
+		double u0 = 2.0 * M_PI * i / around;
+		double u1 = 2.0 * M_PI * (i + 1) / around;
+		for (int j = 0; j < across; ++j) {
+			double v0 = -halfWidth + 2.0 * halfWidth * j / across;
+			double v1 = -halfWidth + 2.0 * halfWidth * (j + 1) / across;
+			mobiusPoint(u0, v0, radius);
+			mobiusPoint(u1, v0, radius);
+			mobiusPoint(u1, v1, radius);
+			mobiusPoint(u0, v0, radius);
+			mobiusPoint(u1, v1, radius);
+			mobiusPoint(u0, v1, radius);
+		}
+	}
+	glEnd();
+}
+
 void display(void)
 {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	glShadeModel(m_Smooth ? GL_SMOOTH : GL_FLAT);
+	
+	GLfloat specularOn[]  = {1.0f, 1.0f, 1.0f, 1.0f};
+	GLfloat specularOff[] = {0.0f, 0.0f, 0.0f, 1.0f};
+	glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR,
+		m_Highlight ? specularOn : specularOff);
+	glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 50.0f);
+	
+	// for Mobius strip: light both front and back-facing triangles
+	glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, current_object == 1 ? GL_TRUE : GL_FALSE);
+
 	glPushMatrix();
 	glTranslatef(0, 0, -6);
 
@@ -108,7 +154,7 @@ void display(void)
 		drawSphere(1);
 		break;
 	case 1:
-		// draw your second primitive object here
+		drawMobius(1.0, 0.4);
 		break;
 	case 2:
 		// draw your first composite object here
@@ -122,9 +168,6 @@ void display(void)
 	glPopMatrix();
 	glutSwapBuffers();
 }
-
-
-
 
 void keyboard(unsigned char key, int x, int y)
 {
@@ -206,6 +249,7 @@ int main(int argc, char** argv)
 	cout << "CS3241 Lab 3" << endl << endl;
 
 	cout << "1-4: Draw different objects" << endl;
+	cout << "1: Sphere, 2: Mobius strip" << endl;
 	cout << "S: Toggle Smooth Shading" << endl;
 	cout << "H: Toggle Highlight" << endl;
 	cout << "W: Draw Wireframe" << endl;
