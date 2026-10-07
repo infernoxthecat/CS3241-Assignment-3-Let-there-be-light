@@ -2,6 +2,7 @@
 #include <cmath>
 #include <iostream>
 #include <cstdlib>
+#include <algorithm>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -27,6 +28,31 @@ GLfloat angle2 = 0;   /* in degrees */
 GLfloat zoom = 1.0;
 int mouseButton = 0;
 int moving, startx, starty;
+
+struct Camera {
+    double eye[3], target[3], up[3];
+    double nearPlane, farPlane, fovy;
+};
+const Camera initialCamera = {{0, 0, 6}, {0, 0, 0}, {0, 1, 0}, 1, 10, 40};
+Camera camera = initialCamera;
+double aspectRatio = 1.0;
+
+void resetCamera()
+{
+    camera = initialCamera;
+    angle = angle2 = 0;
+    zoom = 1;
+    moving = 0;
+}
+
+void reshape(int width, int height)
+{
+    width = std::max(width, 1);
+    height = std::max(height, 1);
+    glViewport(0, 0, width, height);
+    aspectRatio = double(width) / height;
+    glutPostRedisplay();
+}
 
 #define NO_OBJECT 4;
 int current_object = 0;
@@ -348,16 +374,270 @@ void drawCompositeHeart(float scale) {
     glPopMatrix(); glMatrixMode(oldMode); glPopAttrib();
 }
 
+// use the formula y-3.5=-(x-2)^2, 1 < x < 3 to generate branch length distribution
+void drawSnowBranch(float length, int branch) {
+    float branchLength = 0.03f, x = 0.5 + 3.0f/6.0f * branch;
+    float adjustedLength = (3.5 - std::pow(x - 2, 2)) * branchLength;
+    float radius = length * 0.025f;
+    GLUquadric* cylinder = gluNewQuadric();
+    if (!cylinder) return;
+    gluQuadricNormals(cylinder, GLU_SMOOTH);
+
+    glPushMatrix();
+    glTranslatef(0, (length / 6.0f) * (branch + 1), 0);
+    for (int side = -1; side <= 1; side += 2) {
+        glPushMatrix();
+        glRotatef(side * 60.0f, 0, 0, 1);
+        glRotatef(-90, 1, 0, 0); // Cylinder's +Z axis becomes the branch's +Y.
+
+        gluCylinder(cylinder, radius, radius, adjustedLength, 12, 1);
+        glutSolidSphere(radius, 12, 8); // rounded end 1
+        glTranslatef(0, 0, adjustedLength);
+        glutSolidSphere(radius, 12, 8); // rounded end 2
+
+        glPopMatrix();
+    }
+    glPopMatrix();
+    gluDeleteQuadric(cylinder);
+}
+
+// six arms, each with 5 pairs of branches
+void drawSnowflake() {
+    float length = 0.5;
+    glPushMatrix();
+    for (int arm = 0; arm < 6; arm++) {
+        glPushMatrix();
+        glTranslatef(0, length / 2, 0);
+        glScalef(length * 0.05f, length, length * 0.05f);
+        glutSolidCube(1);
+        glPopMatrix();
+        for (int branch = 1; branch <= 5; branch++) {
+            drawSnowBranch(length, branch);
+        }
+        glRotatef(60, 0, 0, 1);
+    }
+    glPopMatrix();
+}
+
+void drawTrunk();
+
+// Simple pseudorandom value from 0 up to (but not including) 1.
+float snowRandom(int& seed)
+{
+    seed = (seed * 321 + 1) % 65536;
+    return seed / 65536.0f;
+}
+
+void drawWinterScene()
+{
+    drawTrunk();
+    glPushAttrib(GL_ENABLE_BIT | GL_LIGHTING_BIT | GL_CURRENT_BIT);
+    glDisable(GL_COLOR_MATERIAL);
+    glEnable(GL_NORMALIZE);
+    GLfloat iceAmbient[]  = {0.16f, 0.20f, 0.28f, 0.8f}; // Soft blue in shaded areas.
+    GLfloat iceDiffuse[]  = {0.82f, 0.93f, 1.00f, 0.6f}; // Crystalline white with a blue tint.
+    GLfloat iceSpecular[] = {0.92f, 0.97f, 1.00f, 1.0f}; // Bright, cool glints.
+    GLfloat noSpecular[]  = {0.00f, 0.00f, 0.00f, 1.0f};
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, iceAmbient);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, iceDiffuse);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR,
+                 m_Highlight ? iceSpecular : noSpecular);
+    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 100.0f);
+    glColor4fv(iceDiffuse);
+
+    struct SnowflakePlacement {
+        float x, y, z, tiltX, tiltY, spin, scale;
+    };
+    const int snowflakeCount = 80;
+    static SnowflakePlacement flakes[snowflakeCount];
+    static bool initialized = false;
+    if (!initialized) {
+        int seed = 3241;
+        for (int i = 0; i < snowflakeCount; ++i) {
+            SnowflakePlacement& flake = flakes[i];
+            flake.scale = 0.12f + 0.10f * snowRandom(seed);
+            // Scatter around a full oval ring, leaving the tree clear.
+            float theta = 2 * kPi * (i + snowRandom(seed)) / snowflakeCount;
+            float spread = snowRandom(seed);
+            flake.x = (1.15f + 0.65f * spread) * cos(theta);
+            flake.y = (1.72f + 0.16f * spread) * sin(theta);
+            flake.z = -0.40f + 0.80f * snowRandom(seed);
+            flake.tiltX = -55.0f + 110.0f * snowRandom(seed);
+            flake.tiltY = -55.0f + 110.0f * snowRandom(seed);
+            flake.spin = 360.0f * snowRandom(seed);
+        }
+        initialized = true;
+    }
+
+    // Draw the ring of snowflakes around the tree.
+    for (int i = 0; i < snowflakeCount; ++i) {
+        const SnowflakePlacement& flake = flakes[i];
+        glPushMatrix();
+        glTranslatef(flake.x, flake.y, flake.z);
+        glRotatef(flake.tiltX, 1, 0, 0);
+        glRotatef(flake.tiltY, 0, 1, 0);
+        glRotatef(flake.spin, 0, 0, 1);
+        glScalef(flake.scale, flake.scale, flake.scale);
+        drawSnowflake();
+        glPopMatrix();
+    }
+    glPopAttrib();
+}
+
+// Two mirrored Bezier edges form a slim teardrop, attached at the origin.
+void drawLeaf()
+{
+    glPushAttrib(GL_ENABLE_BIT | GL_LIGHTING_BIT | GL_CURRENT_BIT);
+    glDisable(GL_COLOR_MATERIAL);
+    glEnable(GL_NORMALIZE);
+    glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, GL_TRUE);
+    GLfloat yellow[] = {0.95f, 0.65f, 0.06f, 1.0f};
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, yellow);
+    glColor4fv(yellow);
+    glBegin(GL_TRIANGLE_STRIP);
+    glNormal3f(0, 0, 1);
+    for (int i = 0; i <= 16; ++i) {
+        float t = i / 16.0f;
+        float width = cubicBezier(0, 0.075f, 0.025f, 0, t);
+        float y = cubicBezier(0, 0.06f, 0.18f, 0.26f, t);
+        glVertex3f(-width, y, 0);
+        glVertex3f(width, y, 0);
+    }
+    glEnd();
+    glPopAttrib();
+}
+
+// A tapered cylinder between two points, with rounded ends to hide joins.
+void drawWoodSegment(GLUquadric* cylinder,
+                     float x1, float y1, float z1,
+                     float x2, float y2, float z2,
+                     float baseRadius, float tipRadius)
+{
+    float dx = x2-x1, dy = y2-y1, dz = z2-z1;
+    float length = sqrt(dx*dx + dy*dy + dz*dz);
+    if (length == 0) return;
+
+    glPushMatrix();
+    glTranslatef(x1, y1, z1);
+    // Turn the cylinder's +Z axis towards the endpoint.
+    if (dx != 0 || dy != 0)
+        glRotatef(atan2(sqrt(dx*dx + dy*dy), dz) * 180 / kPi, -dy, dx, 0);
+    else if (dz < 0)
+        glRotatef(180, 1, 0, 0);
+    glutSolidSphere(baseRadius, 12, 8);
+    gluCylinder(cylinder, baseRadius, tipRadius, length, 12, 1);
+    glTranslatef(0, 0, length);
+    glutSolidSphere(tipRadius, 12, 8);
+    glPopMatrix();
+}
+
+// Grow along local +Y, then split into two shorter, thinner branches.
+void drawFork(GLUquadric* cylinder, float length, float radius, int depth)
+{
+    if (depth <= 0) return;
+
+    float tipRadius = radius * 0.6f;
+    drawWoodSegment(cylinder, 0, 0, 0, 0, length, 0, radius, tipRadius);
+    glPushMatrix();
+    glTranslatef(0, length, 0);
+    if (depth == 1) {
+        drawLeaf();
+        glPopMatrix();
+        return;
+    }
+    glRotatef(35, 0, 1, 0); // Turn each new fork into a different plane.
+    for (int side = -1; side <= 1; side += 2) {
+        glPushMatrix();
+        glRotatef(side * 28.0f, 0, 0, 1);
+        drawFork(cylinder, length * 0.7f, tipRadius, depth - 1);
+        glPopMatrix();
+    }
+    glPopMatrix();
+}
+
+// Seven curved roots overlap near the trunk to form a wide, uneven base.
+void drawTreeBase(GLUquadric* cylinder)
+{
+    const int roots = 7, steps = 12;
+    for (int root = 0; root < roots; ++root) {
+        float angle = 2 * kPi * root / roots + 0.12f * sin(root * 2.0f);
+        float reach = 0.65f + 0.12f * sin(root * 3.0f);
+        float x = -0.06f, y = -0.65f, z = 0.02f, radius = 0.24f;
+        for (int step = 1; step <= steps; ++step) {
+            float t = step / float(steps);
+            // Bend down from the trunk, spread out, then dip into the ground.
+            float outward = cubicBezier(0, 0.05f, reach * 0.65f, reach, t);
+            float nextX = -0.06f + outward * cos(angle);
+            float nextY = cubicBezier(-0.65f, -1.10f, -1.08f, -1.30f, t);
+            float nextZ = 0.02f + outward * sin(angle);
+            float nextRadius = 0.24f * (1-t) + 0.012f * t;
+            drawWoodSegment(cylinder, x, y, z, nextX, nextY, nextZ,
+                            radius, nextRadius);
+            x = nextX; y = nextY; z = nextZ; radius = nextRadius;
+        }
+    }
+}
+
+// Uneven roots and a gently bent trunk that splits into smaller branches.
+void drawTrunk()
+{
+    GLUquadric* cylinder = gluNewQuadric();
+    if (!cylinder) return;
+    gluQuadricNormals(cylinder, GLU_SMOOTH);
+    glPushAttrib(GL_ENABLE_BIT | GL_LIGHTING_BIT | GL_CURRENT_BIT);
+    glDisable(GL_COLOR_MATERIAL);
+    glEnable(GL_NORMALIZE);
+    GLfloat brown[] = {0.20f, 0.09f, 0.035f, 1.0f};
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE, brown);
+    glColor4fv(brown);
+    // Each row: start x,y,z, end x,y,z, start radius, end radius.
+    const float segments[][8] = {
+        // Slightly crooked trunk above the curved base.
+        { -.06f,-.65f,.02f, .04f,-.15f,0, .24f,.19f },
+        { .04f,-.15f,0, -.04f,.35f,.02f, .19f,.14f },
+        { -.04f,.35f,.02f, .10f,.85f,0, .14f,.075f },
+        { .10f,.85f,0, .04f,1.26f,.06f, .075f,.018f },
+
+    };
+    glPushMatrix();
+    glScalef(1.0f, 1.08f, 1.0f); // Make the trunk and branches a little taller.
+    drawTreeBase(cylinder);
+    for (int i = 0; i < sizeof(segments) / sizeof(segments[0]); ++i) {
+        const float* s = segments[i];
+        drawWoodSegment(cylinder, s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+    }
+    // A leaf on the top of the main trunk as well.
+    glPushMatrix();
+    glTranslatef(0.04f, 1.26f, 0.06f);
+    glRotatef(8, 0, 0, 1);
+    drawLeaf();
+    glPopMatrix();
+    // Six main limbs spiral up the trunk; each grows four levels of forks.
+    for (int i = 0; i < 6; ++i) {
+        glPushMatrix();
+        glTranslatef(0.02f, -0.45f + i * 0.18f, 0);
+        glRotatef(i * 137.0f, 0, 1, 0);
+        glRotatef(40, 0, 0, 1);
+        drawFork(cylinder, 0.42f - i * 0.021f, 0.12f - i * 0.0096f, 4);
+        glPopMatrix();
+    }
+    glPopMatrix();
+    glPopAttrib();
+    gluDeleteQuadric(cylinder);
+}
+
+
 void setupLighting()
 {
 	glShadeModel(GL_SMOOTH);
 	glEnable(GL_NORMALIZE);
 
-	// lights, material properties
-	GLfloat	ambientProperties[] = { 0.7f, 0.7f, 0.7f, 1.0f };
-	GLfloat	diffuseProperties[] = { 0.8f, 0.8f, 0.8f, 1.0f };
-	GLfloat	specularProperties[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-	GLfloat lightPosition[] = { -100.0f,100.0f,100.0f,1.0f };
+	// Soft, cool shadows with a brighter warm evening glow.
+	GLfloat globalAmbient[] = { 0.24f, 0.26f, 0.32f, 1.0f };
+	GLfloat ambientProperties[] = { 0.16f, 0.17f, 0.21f, 1.0f };
+	GLfloat diffuseProperties[] = { 0.95f, 0.70f, 0.46f, 1.0f };
+	GLfloat specularProperties[] = { 0.50f, 0.38f, 0.25f, 1.0f };
+	GLfloat lightPosition[] = { -3.0f, 1.0f, 2.0f, 0.0f };
 
 	glClearDepth(1.0);
 
@@ -366,6 +646,7 @@ void setupLighting()
 	glLightfv(GL_LIGHT0, GL_AMBIENT, ambientProperties);
 	glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuseProperties);
 	glLightfv(GL_LIGHT0, GL_SPECULAR, specularProperties);
+	glLightModelfv(GL_LIGHT_MODEL_AMBIENT, globalAmbient);
 	glLightModelf(GL_LIGHT_MODEL_TWO_SIDE, 0.0);
 
 	// Default : lighting
@@ -449,6 +730,14 @@ void drawMobius(double radius, double halfWidth)
 
 void display(void)
 {
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	gluPerspective(camera.fovy, aspectRatio, camera.nearPlane, camera.farPlane);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	gluLookAt(camera.eye[0], camera.eye[1], camera.eye[2],
+	          camera.target[0], camera.target[1], camera.target[2],
+	          camera.up[0], camera.up[1], camera.up[2]);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	glShadeModel(m_Smooth ? GL_SMOOTH : GL_FLAT);
 	
@@ -462,7 +751,6 @@ void display(void)
 	glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, current_object == 1 ? GL_TRUE : GL_FALSE);
 
 	glPushMatrix();
-	glTranslatef(0, 0, -6);
 
 	glRotatef(angle2, 1.0, 0.0, 0.0);
 	glRotatef(angle, 0.0, 1.0, 0.0);
@@ -482,7 +770,7 @@ void display(void)
 		 drawCompositeHeart(0.85f);
 		break;
 	case 3:
-		// draw your second composite object here
+		drawWinterScene();
 		break;
 	default:
 		break;
@@ -494,6 +782,34 @@ void display(void)
 void keyboard(unsigned char key, int x, int y)
 {
 	switch (key) {
+	case 'n':
+		camera.nearPlane = std::max(0.1, camera.nearPlane - 1.0);
+		break;
+	case 'N':
+		camera.nearPlane = std::min(camera.farPlane - 0.1, camera.nearPlane + 1.0);
+		break;
+	case 'f':
+		camera.farPlane = std::max(camera.nearPlane + 0.1, camera.farPlane - 1.0);
+		break;
+	case 'F':
+		camera.farPlane += 1.0;
+		break;
+	case 'o':
+		camera.fovy = std::max(5.0, camera.fovy - 2.0);
+		break;
+	case 'O':
+		camera.fovy = std::min(120.0, camera.fovy + 2.0);
+		break;
+	case 'r':
+		resetCamera();
+		break;
+	case 'R':
+		resetCamera();
+		// A slightly elevated three-quarter view shows the roots and forks.
+		camera.eye[0] = 2.8;
+		camera.eye[1] = 1.5;
+		camera.eye[2] = 6.5;
+		break;
 	case 'p':
 	case 'P':
 		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -530,6 +846,11 @@ void keyboard(unsigned char key, int x, int y)
 	default:
 		break;
 	}
+
+	if (key == 'n' || key == 'N' || key == 'f' || key == 'F' ||
+	    key == 'o' || key == 'O' || key == 'r' || key == 'R')
+		cout << "Near: " << camera.nearPlane << "  Far: " << camera.farPlane
+		     << "  Fovy: " << camera.fovy << endl;
 
 	glutPostRedisplay();
 }
@@ -577,6 +898,11 @@ int main(int argc, char** argv)
 	cout << "W: Draw Wireframe" << endl;
 	cout << "P: Draw Polygon" << endl;
 	cout << "V: Draw Vertices" << endl;
+	cout << "n/N: Decrease/increase near plane by 1" << endl;
+	cout << "f/F: Decrease/increase far plane by 1" << endl;
+	cout << "Clipping demo: press N or f several times; n/F reveal clipped objects" << endl;
+	cout << "o/O: Decrease/increase field of view by 2 degrees" << endl;
+	cout << "r: Reset camera, rotation and zoom; R: Best viewing angle" << endl;
 	cout << "Q: Quit" << endl << endl;
 
 	cout << "Left mouse click and drag: rotate the object" << endl;
@@ -587,8 +913,9 @@ int main(int argc, char** argv)
 	glutInitWindowSize(600, 600);
 	glutInitWindowPosition(50, 50);
 	glutCreateWindow("CS3241 Assignment 3");
-	glClearColor(1.0, 1.0, 1.0, 1.0);
+	glClearColor(0.14f, 0.17f, 0.24f, 1.0f); // Brighter blue evening sky.
 	glutDisplayFunc(display);
+	glutReshapeFunc(reshape);
 	glutMouseFunc(mouse);
 	glutMotionFunc(motion);
 	glutKeyboardFunc(keyboard);
@@ -597,11 +924,6 @@ int main(int argc, char** argv)
 	glEnable(GL_DEPTH_TEST);
 	glDepthMask(GL_TRUE);
 
-	glMatrixMode(GL_PROJECTION);
-	gluPerspective( /* field of view in degree */ 40.0,
-		/* aspect ratio */ 1.0,
-		/* Z near */ 1.0, /* Z far */ 80.0);
-	glMatrixMode(GL_MODELVIEW);
 	glutMainLoop();
 
 	return 0;
